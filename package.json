@@ -1,0 +1,23 @@
+{
+  "name": "bakeshop",
+  "private": true,
+  "scripts": {
+    "dev": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' next dev",
+    "build": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' next build",
+    "start": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' next start",
+    "test": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' tsx --test tests/*.test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^15.5.4",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}
