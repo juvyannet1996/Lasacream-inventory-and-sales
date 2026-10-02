@@ -1,6 +1,9 @@
 {
   "name": "bakeshop",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' next dev",
     "build": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' next build",
