@@ -26,4 +26,4 @@ The public site stores products, inventory, purchases, sales, and stock history 
 
 On this computer, `npm run dev` still uses `data/bakeshop.db`. The Cloudflare site uses D1. They are separate copies.
 
-The site is not on a public address yet. Deploy needs a Cloudflare API token that can edit D1 and Workers scripts. The D1 database name is `lasacream` and the binding name is `DB`. After the database exists, put its id in `wrangler.jsonc` in place of the placeholder, then run `npm run deploy`.
+The D1 database is named `lasacream` and the binding name is `DB`. The site is not on a public address until it is deployed.
