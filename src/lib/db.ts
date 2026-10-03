@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { DomainError } from "./errors";
+import { downloadDatabase, snapshotConfig, uploadDatabase } from "./snapshot";
 import { seedIfEmpty } from "./seed";
 
 const SCHEMA = `
@@ -127,6 +129,7 @@ CREATE INDEX IF NOT EXISTS idx_consumptions_sale ON sale_consumptions(sale_id, s
 `;
 
 let database: DatabaseSync | null = null;
+let databaseFile: string | null = null;
 let txDepth = 0;
 
 export function defaultDatabasePath(): string {
@@ -144,9 +147,44 @@ export function openDatabase(filename: string): DatabaseSync {
   return db;
 }
 
+function openFileDatabase(filename: string): DatabaseSync {
+  const db = new DatabaseSync(filename);
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA journal_mode = WAL");
+  migrate(db);
+  return db;
+}
+
+function remember(filename: string, db: DatabaseSync): void {
+  database = db;
+  databaseFile = filename;
+}
+
 /** Test hook. Replaces the process-wide connection and does not seed. */
 export function useDatabase(db: DatabaseSync): void {
+  if (database && database !== db) {
+    try {
+      database.close();
+    } catch {
+      // The previous connection may already be closed.
+    }
+  }
   database = db;
+  databaseFile = null;
+  txDepth = 0;
+}
+
+/** Test hook. Drops the open connection so the next read loads from disk or storage. */
+export function resetDatabaseForTests(): void {
+  if (database) {
+    try {
+      database.close();
+    } catch {
+      // The previous connection may already be closed.
+    }
+  }
+  database = null;
+  databaseFile = null;
   txDepth = 0;
 }
 
@@ -154,32 +192,74 @@ export function getDb(): DatabaseSync {
   if (!database) {
     const filename = process.env.BAKESHOP_DB ?? defaultDatabasePath();
     mkdirSync(path.dirname(filename), { recursive: true });
-    const db = new DatabaseSync(filename);
-    db.exec("PRAGMA foreign_keys = ON");
-    db.exec("PRAGMA journal_mode = WAL");
-    migrate(db);
-    database = db;
-    if (process.env.BAKESHOP_SEED !== "0") seedIfEmpty();
+    const loaded = loadSnapshot(filename);
+    remember(filename, openFileDatabase(filename));
+    try {
+      if (process.env.BAKESHOP_SEED !== "0" && loaded !== "restored") seedIfEmpty();
+    } catch (error) {
+      resetDatabaseForTests();
+      throw error;
+    }
   }
+  if (!database) throw new DomainError("Saved stock and sales could not be loaded. Try again in a minute.");
   return database;
+}
+
+function loadSnapshot(filename: string): "restored" | "missing" | "local" | "off" {
+  if (!snapshotConfig()) return "off";
+  if (existsSync(filename)) return "local";
+  return downloadDatabase(filename);
+}
+
+function consistentBytes(db: DatabaseSync, filename: string): Buffer {
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  return readFileSync(filename);
+}
+
+function replaceWithBytes(filename: string, bytes: Buffer): void {
+  if (database) {
+    try {
+      database.close();
+    } catch {
+      // The connection may already be closed.
+    }
+    database = null;
+  }
+  writeFileSync(filename, bytes);
+  rmSync(`${filename}-wal`, { force: true });
+  rmSync(`${filename}-shm`, { force: true });
+  remember(filename, openFileDatabase(filename));
 }
 
 export function withTransaction<T>(fn: () => T): T {
   const db = getDb();
   if (txDepth > 0) return fn();
+  const filename = databaseFile;
+  const keep = filename && snapshotConfig() ? consistentBytes(db, filename) : null;
   db.exec("BEGIN IMMEDIATE");
   txDepth += 1;
   try {
     const result = fn();
-    txDepth -= 1;
     db.exec("COMMIT");
+    txDepth -= 1;
+    if (keep && filename) {
+      try {
+        consistentBytes(db, filename);
+        uploadDatabase(filename);
+      } catch {
+        replaceWithBytes(filename, keep);
+        throw new DomainError("This change was not saved. Nothing was kept. Please try again.");
+      }
+    }
     return result;
   } catch (error) {
-    txDepth -= 1;
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      // The connection may already be outside a transaction.
+    if (txDepth > 0) {
+      txDepth -= 1;
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // The connection may already be outside a transaction.
+      }
     }
     throw error;
   }

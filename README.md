@@ -26,6 +26,8 @@ Node 22 or newer is required. Stock is stored with the built-in SQLite module.
 
 The free instance sleeps after about 15 minutes with no visitors. The next open takes about a minute while it wakes.
 
-The free plan has no persistent disk. Purchases, sales, and stock in `data/bakeshop.db` are erased when the service sleeps, restarts, or redeploys. A fresh start loads the sample flour, eggs, and cake sale again. Keeping a real ledger needs a host that offers a persistent disk, which this free plan does not.
+The free plan has no persistent disk. On its own, purchases, sales, and stock in `data/bakeshop.db` are erased when the service sleeps, restarts, or redeploys.
+
+When `BAKESHOP_S3_ENDPOINT`, `BAKESHOP_S3_BUCKET`, `BAKESHOP_S3_ACCESS_KEY_ID`, and `BAKESHOP_S3_SECRET_ACCESS_KEY` are set, each saved change is copied to that storage and loaded again the next time the site wakes. A sale entered today is still there tomorrow. If the copy fails, the change is not kept.
 
 There is no login. Anyone with the address can change stock.
