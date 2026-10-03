@@ -16,7 +16,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="app">
       <aside className="sidebar">
-        <div className="brand">Bakeshop</div>
+        <div className="brand">Lasacream</div>
         <nav aria-label="Main">
           {NAV.map((item) => {
             const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
@@ -31,7 +31,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
       <div className="main">
         <header className="topbar">
-          <strong>Bakeshop</strong>
+          <strong>Lasacream</strong>
         </header>
         <div className="content">{children}</div>
       </div>

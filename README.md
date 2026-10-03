@@ -1,4 +1,4 @@
-# Bakeshop
+# Lasacream
 
 A small internal tracker for inventory, recipes, purchases, sales, and stock history.
 
@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. The database is created at `data/bakeshop.db` and starts with sample stock, recipes, and one sale. Delete that file to start over. That file stays on this computer only.
+Open http://localhost:3000. The database is created at `data/lasacream.db` and starts with sample stock, recipes, and one sale. Delete that file to start over. That file stays on this computer only.
 
 ```bash
 npm test
@@ -24,6 +24,6 @@ Node 22 or newer is required.
 
 The public site stores products, inventory, purchases, sales, and stock history in Cloudflare D1. D1 keeps that data when the computer is off and when the site is idle. A sale entered today is still there tomorrow.
 
-On this computer, `npm run dev` still uses `data/bakeshop.db`. The Cloudflare site uses D1. They are separate copies.
+On this computer, `npm run dev` still uses `data/lasacream.db`. The Cloudflare site uses D1. They are separate copies.
 
-The public site is https://lasacream-bakeshop.lasacream.workers.dev. Its products, inventory, purchases, sales, and stock history are stored in the Cloudflare D1 database named `lasacream`.
+The public site is https://lasacream.lasacream.workers.dev. Its products, inventory, purchases, sales, and stock history are stored in the Cloudflare D1 database named `lasacream`.

@@ -174,7 +174,7 @@ let readyPromise: Promise<void> | null = null;
 let readyDone = false;
 
 export function defaultDatabasePath(): string {
-  return path.join(process.cwd(), "data", "bakeshop.db");
+  return path.join(process.cwd(), "data", "lasacream.db");
 }
 
 export function migrate(db: { exec(sql: string): void }): void {

@@ -4,8 +4,8 @@ import { ensureReady } from "@/lib/ready";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: { default: "Bakeshop", template: "%s · Bakeshop" },
-  description: "Inventory, recipes, purchases, and sales for a small bakeshop.",
+  title: { default: "Lasacream", template: "%s · Lasacream" },
+  description: "Inventory, recipes, purchases, and sales for Lasacream.",
 };
 
 export const viewport: Viewport = {
