@@ -4,11 +4,11 @@ import { listItemOptions, listProductOptions } from "@/lib/queries";
 import { getSale } from "@/lib/sales";
 import { SaleForm, type SaleFormInitial } from "./SaleForm";
 
-export function SaleScreen({ saleId }: { saleId?: string }) {
-  const items = listItemOptions();
-  const products = listProductOptions();
+export async function SaleScreen({ saleId }: { saleId?: string }) {
+  const items = await listItemOptions();
+  const products = await listProductOptions();
   const today = todayISO();
-  const sale = saleId ? getSale(saleId) : null;
+  const sale = saleId ? await getSale(saleId) : null;
   if (saleId && !sale) notFound();
   if (sale?.status === "voided") {
     return (

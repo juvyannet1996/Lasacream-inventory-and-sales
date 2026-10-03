@@ -1,9 +1,5 @@
-import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
-import { DomainError } from "./errors";
-import { downloadDatabase, snapshotConfig, uploadDatabase } from "./snapshot";
-import { seedIfEmpty } from "./seed";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS inventory_items (
@@ -128,139 +124,359 @@ CREATE TABLE IF NOT EXISTS sale_consumptions (
 CREATE INDEX IF NOT EXISTS idx_consumptions_sale ON sale_consumptions(sale_id, sale_line_id);
 `;
 
-let database: DatabaseSync | null = null;
-let databaseFile: string | null = null;
-let txDepth = 0;
+export type SqlValue = string | number | null | bigint;
+
+export type Statement = {
+  get<T = unknown>(...params: SqlValue[]): Promise<T | undefined>;
+  all<T = unknown>(...params: SqlValue[]): Promise<T[]>;
+  run(...params: SqlValue[]): Promise<void>;
+};
+
+export type Sql = {
+  prepare(sql: string): Statement;
+  exec(sql: string): Promise<void>;
+};
+
+type D1Prepared = {
+  bind(...values: unknown[]): D1Prepared;
+  first<T>(): Promise<T | null>;
+  all<T>(): Promise<{ results?: T[] }>;
+  run(): Promise<unknown>;
+};
+
+type D1Like = {
+  prepare(sql: string): D1Prepared;
+  batch(statements: D1Prepared[]): Promise<unknown>;
+  exec(sql: string): Promise<unknown>;
+};
+
+export type SqliteDatabase = {
+  exec(sql: string): void;
+  prepare(sql: string): {
+    get(...params: SqlValue[]): unknown;
+    all(...params: SqlValue[]): unknown[];
+    run(...params: SqlValue[]): unknown;
+  };
+};
+
+type TxState = {
+  depth: number;
+  overlay: Map<string, unknown>;
+  buffer: { sql: string; params: SqlValue[] }[] | null;
+};
+
+const txState = new AsyncLocalStorage<TxState>();
+let testDb: SqliteDatabase | null = null;
+let fileDb: SqliteDatabase | null = null;
+let simulatedD1: D1Like | null = null;
+let d1Schema: Promise<void> | null = null;
+let readyPromise: Promise<void> | null = null;
+let readyDone = false;
 
 export function defaultDatabasePath(): string {
   return path.join(process.cwd(), "data", "bakeshop.db");
 }
 
-export function migrate(db: DatabaseSync): void {
+export function migrate(db: { exec(sql: string): void }): void {
   db.exec(SCHEMA);
 }
 
-export function openDatabase(filename: string): DatabaseSync {
+export async function openDatabase(filename: string): Promise<SqliteDatabase> {
+  const { DatabaseSync } = await loadSqlite();
   const db = new DatabaseSync(filename);
   db.exec("PRAGMA foreign_keys = ON");
   migrate(db);
   return db;
 }
 
-function openFileDatabase(filename: string): DatabaseSync {
-  const db = new DatabaseSync(filename);
-  db.exec("PRAGMA foreign_keys = ON");
-  db.exec("PRAGMA journal_mode = WAL");
-  migrate(db);
-  return db;
+/** Test hook. Uses a real SQLite transaction for each saved change. */
+export function useDatabase(db: SqliteDatabase): void {
+  testDb = db;
+  simulatedD1 = null;
+  readyDone = false;
+  readyPromise = null;
 }
 
-function remember(filename: string, db: DatabaseSync): void {
-  database = db;
-  databaseFile = filename;
+/**
+ * Test hook. Saves behave like Cloudflare D1: writes inside a change are
+ * stored together at the end, and reads of stock use the in-memory copy.
+ */
+export function useD1Simulator(db: SqliteDatabase): void {
+  testDb = null;
+  simulatedD1 = sqliteBackedD1(db);
+  d1Schema = Promise.resolve();
+  readyDone = false;
+  readyPromise = null;
 }
 
-/** Test hook. Replaces the process-wide connection and does not seed. */
-export function useDatabase(db: DatabaseSync): void {
-  if (database && database !== db) {
-    try {
-      database.close();
-    } catch {
-      // The previous connection may already be closed.
-    }
-  }
-  database = db;
-  databaseFile = null;
-  txDepth = 0;
-}
-
-/** Test hook. Drops the open connection so the next read loads from disk or storage. */
+/** Test hook. Drops the open connection. */
 export function resetDatabaseForTests(): void {
-  if (database) {
-    try {
-      database.close();
-    } catch {
-      // The previous connection may already be closed.
-    }
+  testDb = null;
+  simulatedD1 = null;
+  d1Schema = null;
+  readyDone = false;
+  readyPromise = null;
+}
+
+export function rememberedItem<T>(id: string): T | undefined {
+  return txState.getStore()?.overlay.get(id) as T | undefined;
+}
+
+export function rememberItem(id: string, value: unknown): void {
+  txState.getStore()?.overlay.set(id, value);
+}
+
+export async function getDb(): Promise<Sql> {
+  await whenReady();
+  const d1 = await activeD1();
+  if (d1) {
+    const buffer = txState.getStore()?.buffer ?? null;
+    return d1Adapter(d1, buffer);
   }
-  database = null;
-  databaseFile = null;
-  txDepth = 0;
+  return sqliteAdapter(await sqliteHandle());
 }
 
-export function getDb(): DatabaseSync {
-  if (!database) {
-    const filename = process.env.BAKESHOP_DB ?? defaultDatabasePath();
-    mkdirSync(path.dirname(filename), { recursive: true });
-    const loaded = loadSnapshot(filename);
-    remember(filename, openFileDatabase(filename));
-    try {
-      if (process.env.BAKESHOP_SEED !== "0" && loaded !== "restored") seedIfEmpty();
-    } catch (error) {
-      resetDatabaseForTests();
-      throw error;
-    }
-  }
-  if (!database) throw new DomainError("Saved stock and sales could not be loaded. Try again in a minute.");
-  return database;
-}
-
-function loadSnapshot(filename: string): "restored" | "missing" | "local" | "off" {
-  if (!snapshotConfig()) return "off";
-  if (existsSync(filename)) return "local";
-  return downloadDatabase(filename);
-}
-
-function consistentBytes(db: DatabaseSync, filename: string): Buffer {
-  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  return readFileSync(filename);
-}
-
-function replaceWithBytes(filename: string, bytes: Buffer): void {
-  if (database) {
-    try {
-      database.close();
-    } catch {
-      // The connection may already be closed.
-    }
-    database = null;
-  }
-  writeFileSync(filename, bytes);
-  rmSync(`${filename}-wal`, { force: true });
-  rmSync(`${filename}-shm`, { force: true });
-  remember(filename, openFileDatabase(filename));
-}
-
-export function withTransaction<T>(fn: () => T): T {
-  const db = getDb();
-  if (txDepth > 0) return fn();
-  const filename = databaseFile;
-  const keep = filename && snapshotConfig() ? consistentBytes(db, filename) : null;
-  db.exec("BEGIN IMMEDIATE");
-  txDepth += 1;
-  try {
-    const result = fn();
-    db.exec("COMMIT");
-    txDepth -= 1;
-    if (keep && filename) {
-      try {
-        consistentBytes(db, filename);
-        uploadDatabase(filename);
-      } catch {
-        replaceWithBytes(filename, keep);
-        throw new DomainError("This change was not saved. Nothing was kept. Please try again.");
+async function whenReady(): Promise<void> {
+  if (readyDone) return;
+  if (!readyPromise) {
+    readyPromise = (async () => {
+      await openSchema();
+      readyDone = true;
+      if (shouldSeed()) {
+        const { seedIfEmpty } = await import("./seed");
+        await seedIfEmpty();
       }
+    })().catch((error: unknown) => {
+      readyDone = false;
+      readyPromise = null;
+      throw error;
+    });
+  }
+  await readyPromise;
+}
+
+async function openSchema(): Promise<void> {
+  const d1 = await activeD1();
+  if (d1) await ensureD1Schema(d1);
+  else await sqliteHandle();
+}
+
+function shouldSeed(): boolean {
+  if (process.env.BAKESHOP_SEED === "0") return false;
+  if (testDb || simulatedD1) return false;
+  return true;
+}
+
+export async function withTransaction<T>(fn: () => Promise<T>): Promise<T> {
+  const current = txState.getStore();
+  if (current && current.depth > 0) {
+    current.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      current.depth -= 1;
     }
+  }
+
+  const d1 = await activeD1();
+  if (d1) {
+    await ensureD1Schema(d1);
+    const state: TxState = { depth: 1, overlay: new Map(), buffer: [] };
+    return txState.run(state, async () => {
+      const result = await fn();
+      const statements = state.buffer ?? [];
+      if (statements.length > 0) {
+        await d1.batch([
+          d1.prepare("PRAGMA foreign_keys = ON"),
+          ...statements.map(({ sql, params }) => {
+            const prepared = d1.prepare(sql);
+            return params.length > 0 ? prepared.bind(...params) : prepared;
+          }),
+        ]);
+      }
+      return result;
+    });
+  }
+
+  const db = await sqliteHandle();
+  const state: TxState = { depth: 1, overlay: new Map(), buffer: null };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = await txState.run(state, fn);
+    db.exec("COMMIT");
     return result;
   } catch (error) {
-    if (txDepth > 0) {
-      txDepth -= 1;
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        // The connection may already be outside a transaction.
-      }
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // The connection may already be outside a transaction.
     }
     throw error;
   }
+}
+
+async function activeD1(): Promise<D1Like | null> {
+  if (testDb) return null;
+  if (simulatedD1) return simulatedD1;
+  return cloudflareD1();
+}
+
+async function sqliteHandle(): Promise<SqliteDatabase> {
+  if (testDb) return testDb;
+  if (!fileDb) {
+    const { mkdirSync } = await loadFs();
+    const filename = process.env.BAKESHOP_DB ?? defaultDatabasePath();
+    mkdirSync(path.dirname(filename), { recursive: true });
+    fileDb = await openDatabase(filename);
+    fileDb.exec("PRAGMA journal_mode = WAL");
+  }
+  return fileDb;
+}
+
+function sqliteAdapter(db: SqliteDatabase): Sql {
+  return {
+    async exec(sql: string) {
+      db.exec(sql);
+    },
+    prepare(sql: string) {
+      const statement = db.prepare(sql);
+      return {
+        async get<T>(...params: SqlValue[]) {
+          return statement.get(...params) as T | undefined;
+        },
+        async all<T>(...params: SqlValue[]) {
+          return statement.all(...params) as T[];
+        },
+        async run(...params: SqlValue[]) {
+          statement.run(...params);
+        },
+      };
+    },
+  };
+}
+
+function d1Adapter(d1: D1Like, buffer: { sql: string; params: SqlValue[] }[] | null): Sql {
+  return {
+    async exec(sql: string) {
+      if (buffer) throw new Error("Schema changes belong outside a saved change.");
+      await d1.exec(sql);
+    },
+    prepare(sql: string) {
+      return {
+        async get<T>(...params: SqlValue[]) {
+          const prepared = d1.prepare(sql);
+          const bound = params.length > 0 ? prepared.bind(...params) : prepared;
+          const row = await bound.first<T>();
+          return row ?? undefined;
+        },
+        async all<T>(...params: SqlValue[]) {
+          const prepared = d1.prepare(sql);
+          const bound = params.length > 0 ? prepared.bind(...params) : prepared;
+          const result = await bound.all<T>();
+          return result.results ?? [];
+        },
+        async run(...params: SqlValue[]) {
+          if (buffer) {
+            buffer.push({ sql, params });
+            return;
+          }
+          const prepared = d1.prepare(sql);
+          if (params.length > 0) await prepared.bind(...params).run();
+          else await prepared.run();
+        },
+      };
+    },
+  };
+}
+
+function sqliteBackedD1(db: SqliteDatabase): D1Like {
+  return {
+    prepare(sql: string) {
+      const build = (params: SqlValue[]): D1Prepared => ({
+        bind(...values: unknown[]) {
+          return build(values as SqlValue[]);
+        },
+        async first<T>() {
+          return (db.prepare(sql).get(...params) as T | undefined) ?? null;
+        },
+        async all<T>() {
+          return { results: db.prepare(sql).all(...params) as T[] };
+        },
+        async run() {
+          if (/^\s*pragma/i.test(sql)) return;
+          db.prepare(sql).run(...params);
+        },
+      });
+      return build([]);
+    },
+    async batch(statements: D1Prepared[]) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const statement of statements) await statement.run();
+        db.exec("COMMIT");
+      } catch (error) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+          // The connection may already be outside a transaction.
+        }
+        throw error;
+      }
+    },
+    async exec(sql: string) {
+      db.exec(sql);
+    },
+  };
+}
+
+function schemaStatements(): string[] {
+  return SCHEMA.split(";")
+    .map((statement) => statement.replace(/\s+/g, " ").trim())
+    .filter((statement) => statement.length > 0);
+}
+
+async function ensureD1Schema(d1: D1Like): Promise<void> {
+  if (!d1Schema) {
+    const statements = schemaStatements();
+    d1Schema = d1
+      .batch(statements.map((sql) => d1.prepare(sql)))
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        d1Schema = null;
+        throw error;
+      });
+  }
+  await d1Schema;
+}
+
+function runningOnCloudflare(): boolean {
+  return typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers";
+}
+
+async function cloudflareD1(): Promise<D1Like | null> {
+  if (process.env.BAKESHOP_DB) return null;
+  if (!runningOnCloudflare()) return null;
+  try {
+    const mod = (await import("@opennextjs/cloudflare")) as unknown as {
+      getCloudflareContext: (options?: { async?: boolean }) => Promise<{ env?: { DB?: D1Like } }>;
+    };
+    const context = await mod.getCloudflareContext({ async: true });
+    return context.env?.DB ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadSqlite(): Promise<{ DatabaseSync: new (filename: string) => SqliteDatabase }> {
+  const dynamicImport = new Function("specifier", "return import(specifier)") as (
+    specifier: string,
+  ) => Promise<{ DatabaseSync: new (filename: string) => SqliteDatabase }>;
+  return dynamicImport("node:" + "sqlite");
+}
+
+async function loadFs(): Promise<{ mkdirSync: (directory: string, options: { recursive: boolean }) => void }> {
+  const dynamicImport = new Function("specifier", "return import(specifier)") as (
+    specifier: string,
+  ) => Promise<{ mkdirSync: (directory: string, options: { recursive: boolean }) => void }>;
+  return dynamicImport("node:" + "fs");
 }

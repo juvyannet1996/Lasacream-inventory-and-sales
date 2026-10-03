@@ -4,26 +4,26 @@ import { createAdjustment, createItem, createPurchase, type ItemRecord } from ".
 import { saveProduct } from "./products";
 import { saveSale } from "./sales";
 
-export function seedIfEmpty(): void {
-  const row = getDb().prepare("SELECT COUNT(*) AS c FROM inventory_items").get() as { c: number };
+export async function seedIfEmpty(): Promise<void> {
+  const row = (await (await getDb()).prepare("SELECT COUNT(*) AS c FROM inventory_items").get()) as { c: number };
   if (row.c > 0) return;
-  withTransaction(() => {
+  await withTransaction(async () => {
     const today = todayISO();
     const earlier = Number(today.slice(8, 10)) >= 12 ? addDays(today, -10) : today;
     const laterPurchase = Number(today.slice(8, 10)) >= 12 ? addDays(today, -6) : today;
     const wastageDay = Number(today.slice(8, 10)) >= 2 ? addDays(today, -1) : today;
 
-    const flour = item("All-Purpose Flour", "ingredient", "🌾", "g", 5000);
-    const sugar = item("Sugar", "ingredient", "🍬", "g", 2000);
-    const butter = item("Butter", "ingredient", "🧈", "g", 1000);
-    const eggs = item("Eggs", "ingredient", "🥚", "pcs", 30);
-    const cocoa = item("Cocoa Powder", "ingredient", "🍫", "g", 200);
-    const chips = item("Chocolate Chips", "ingredient", "🍪", "g", 400);
-    const bananas = item("Bananas", "ingredient", "🍌", "g", 500);
-    const boxes = item("Cake Boxes", "packaging", "📦", "pcs", 10);
-    const boards = item("Cake Boards", "packaging", "🪵", "pcs", 10);
+    const flour = await item("All-Purpose Flour", "ingredient", "🌾", "g", 5000);
+    const sugar = await item("Sugar", "ingredient", "🍬", "g", 2000);
+    const butter = await item("Butter", "ingredient", "🧈", "g", 1000);
+    const eggs = await item("Eggs", "ingredient", "🥚", "pcs", 30);
+    const cocoa = await item("Cocoa Powder", "ingredient", "🍫", "g", 200);
+    const chips = await item("Chocolate Chips", "ingredient", "🍪", "g", 400);
+    const bananas = await item("Bananas", "ingredient", "🍌", "g", 500);
+    const boxes = await item("Cake Boxes", "packaging", "📦", "pcs", 10);
+    const boards = await item("Cake Boards", "packaging", "🪵", "pcs", 10);
 
-    createPurchase({
+    await createPurchase({
       itemId: flour.id,
       amount: 10,
       unit: "kg",
@@ -31,7 +31,7 @@ export function seedIfEmpty(): void {
       date: earlier,
       supplier: "Mercado Grains",
     });
-    createPurchase({
+    await createPurchase({
       itemId: flour.id,
       amount: 15,
       unit: "kg",
@@ -39,16 +39,16 @@ export function seedIfEmpty(): void {
       date: laterPurchase,
       supplier: "Mercado Grains",
     });
-    createPurchase({ itemId: sugar.id, amount: 10, unit: "kg", cost: 680, date: earlier, supplier: "Mercado Grains" });
-    createPurchase({ itemId: butter.id, amount: 5, unit: "kg", cost: 1750, date: earlier, supplier: "Dairy Co-op" });
-    createPurchase({ itemId: eggs.id, amount: 188, unit: "pcs", cost: 1551, date: earlier, supplier: "Barrio Poultry" });
-    createPurchase({ itemId: cocoa.id, amount: 1, unit: "kg", cost: 480, date: earlier, supplier: "Mercado Grains" });
-    createPurchase({ itemId: chips.id, amount: 2, unit: "kg", cost: 760, date: earlier, supplier: "Mercado Grains" });
-    createPurchase({ itemId: bananas.id, amount: 3, unit: "kg", cost: 180, date: earlier, supplier: "Fruit stall" });
-    createPurchase({ itemId: boxes.id, amount: 40, unit: "pcs", cost: 600, date: earlier, supplier: "Pack Right" });
-    createPurchase({ itemId: boards.id, amount: 8, unit: "pcs", cost: 200, date: earlier, supplier: "Pack Right" });
+    await createPurchase({ itemId: sugar.id, amount: 10, unit: "kg", cost: 680, date: earlier, supplier: "Mercado Grains" });
+    await createPurchase({ itemId: butter.id, amount: 5, unit: "kg", cost: 1750, date: earlier, supplier: "Dairy Co-op" });
+    await createPurchase({ itemId: eggs.id, amount: 188, unit: "pcs", cost: 1551, date: earlier, supplier: "Barrio Poultry" });
+    await createPurchase({ itemId: cocoa.id, amount: 1, unit: "kg", cost: 480, date: earlier, supplier: "Mercado Grains" });
+    await createPurchase({ itemId: chips.id, amount: 2, unit: "kg", cost: 760, date: earlier, supplier: "Mercado Grains" });
+    await createPurchase({ itemId: bananas.id, amount: 3, unit: "kg", cost: 180, date: earlier, supplier: "Fruit stall" });
+    await createPurchase({ itemId: boxes.id, amount: 40, unit: "pcs", cost: 600, date: earlier, supplier: "Pack Right" });
+    await createPurchase({ itemId: boards.id, amount: 8, unit: "pcs", cost: 200, date: earlier, supplier: "Pack Right" });
 
-    createAdjustment({
+    await createAdjustment({
       itemId: butter.id,
       amount: 250,
       unit: "g",
@@ -58,7 +58,7 @@ export function seedIfEmpty(): void {
       date: wastageDay,
     });
 
-    const cake = saveProduct({
+    const cake = await saveProduct({
       name: "Chocolate Cake",
       icon: "🎂",
       defaultPrice: 850,
@@ -72,7 +72,7 @@ export function seedIfEmpty(): void {
         { itemId: boards.id, quantityBase: 1 },
       ],
     });
-    saveProduct({
+    await saveProduct({
       name: "Brownies",
       icon: "🍫",
       defaultPrice: 180,
@@ -85,7 +85,7 @@ export function seedIfEmpty(): void {
         { itemId: chips.id, quantityBase: 80 },
       ],
     });
-    saveProduct({
+    await saveProduct({
       name: "Cookies",
       icon: "🍪",
       defaultPrice: 150,
@@ -97,7 +97,7 @@ export function seedIfEmpty(): void {
         { itemId: chips.id, quantityBase: 120 },
       ],
     });
-    saveProduct({
+    await saveProduct({
       name: "Banana Bread",
       icon: "🍌",
       defaultPrice: 220,
@@ -110,7 +110,7 @@ export function seedIfEmpty(): void {
       ],
     });
 
-    saveSale({
+    await saveSale({
       soldAt: today,
       lines: [
         {
@@ -124,6 +124,12 @@ export function seedIfEmpty(): void {
   });
 }
 
-function item(name: string, category: ItemRecord["category"], icon: string, baseUnit: ItemRecord["baseUnit"], minimumStock: number) {
+function item(
+  name: string,
+  category: ItemRecord["category"],
+  icon: string,
+  baseUnit: ItemRecord["baseUnit"],
+  minimumStock: number,
+) {
   return createItem({ name, category, icon, baseUnit, minimumStock });
 }

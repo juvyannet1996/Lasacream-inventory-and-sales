@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AdjustmentReason, BaseUnit, Category, TransactionType } from "./constants";
 import { isAdjustmentReason, transactionTypeForReason } from "./constants";
 import { applyInbound, applyOutbound, currentAverage, type StockCostState } from "./costing";
-import { getDb, withTransaction } from "./db";
+import { getDb, rememberItem, rememberedItem, withTransaction } from "./db";
 import { nowIso } from "./dates";
 import { DomainError } from "./errors";
 import {
@@ -82,13 +82,15 @@ function mapItem(row: ItemRow): ItemRecord {
   };
 }
 
-export function getItem(id: string): ItemRecord | null {
-  const row = getDb().prepare("SELECT * FROM inventory_items WHERE id = ?").get(id) as ItemRow | undefined;
+export async function getItem(id: string): Promise<ItemRecord | null> {
+  const cached = rememberedItem<ItemRecord>(id);
+  if (cached) return cached;
+  const row = (await (await getDb()).prepare("SELECT * FROM inventory_items WHERE id = ?").get(id)) as ItemRow | undefined;
   return row ? mapItem(row) : null;
 }
 
-export function requireItem(id: string): ItemRecord {
-  const item = getItem(id);
+export async function requireItem(id: string): Promise<ItemRecord> {
+  const item = await getItem(id);
   if (!item) throw new DomainError("That inventory item no longer exists.");
   return item;
 }
@@ -105,9 +107,9 @@ function stateOf(item: ItemRecord): StockCostState {
  * The only writer of on-hand quantity and average cost.
  * Must be called inside withTransaction by the caller when grouped with other writes.
  */
-export function postMovement(input: MovementInput): MovementResult {
-  const db = getDb();
-  const item = requireItem(input.itemId);
+export async function postMovement(input: MovementInput): Promise<MovementResult> {
+  const db = await getDb();
+  const item = await requireItem(input.itemId);
   const state = stateOf(item);
   let next: StockCostState;
   let unitCost: number;
@@ -132,13 +134,21 @@ export function postMovement(input: MovementInput): MovementResult {
   }
 
   const timestamp = nowIso();
-  db.prepare(
+  await db.prepare(
     `UPDATE inventory_items
      SET quantity_base = ?, inventory_value = ?, average_cost_per_base_unit = ?, updated_at = ?
      WHERE id = ?`,
   ).run(next.quantityBase, next.inventoryValue, next.averageCostPerBaseUnit, timestamp, item.id);
 
-  db.prepare(
+  rememberItem(item.id, {
+    ...item,
+    quantityBase: next.quantityBase,
+    inventoryValue: next.inventoryValue,
+    averageCostPerBaseUnit: next.averageCostPerBaseUnit,
+    updatedAt: timestamp,
+  });
+
+  await db.prepare(
     `INSERT INTO inventory_transactions (
       id, item_id, type, quantity_base, unit_cost_per_base, total_cost, reason,
       reference_type, reference_id, reference_line_id, notes, status, occurred_at, created_at
@@ -162,8 +172,8 @@ export function postMovement(input: MovementInput): MovementResult {
   return { unitCost, totalCost: input.quantityBase < 0 ? consumedCost : input.inboundValue ?? 0 };
 }
 
-export function listItems(): ItemRecord[] {
-  const rows = getDb().prepare("SELECT * FROM inventory_items ORDER BY name COLLATE NOCASE").all() as ItemRow[];
+export async function listItems(): Promise<ItemRecord[]> {
+  const rows = (await (await getDb()).prepare("SELECT * FROM inventory_items ORDER BY name COLLATE NOCASE").all()) as ItemRow[];
   return rows.map(mapItem);
 }
 
@@ -176,54 +186,82 @@ export type ItemInput = {
   active?: boolean;
 };
 
-export function createItem(input: ItemInput): ItemRecord {
-  return withTransaction(() => {
+export async function createItem(input: ItemInput): Promise<ItemRecord> {
+  return withTransaction(async () => {
     const name = cleanName(input.name, "Item name");
-    assertUniqueItemName(name);
+    await assertUniqueItemName(name);
     const category = cleanCategory(input.category);
     const baseUnit = cleanBaseUnit(input.baseUnit);
     const minimumStock = cleanMinimum(input.minimumStock ?? 0);
     const icon = cleanIcon(input.icon, "📦");
     const id = randomUUID();
     const timestamp = nowIso();
-    getDb()
+    const active = input.active === false ? 0 : 1;
+    await (await getDb())
       .prepare(
         `INSERT INTO inventory_items (
           id, name, category, icon, base_unit, minimum_stock, quantity_base, inventory_value,
           average_cost_per_base_unit, active, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?)`,
       )
-      .run(id, name, category, icon, baseUnit, minimumStock, input.active === false ? 0 : 1, timestamp, timestamp);
-    return requireItem(id);
+      .run(id, name, category, icon, baseUnit, minimumStock, active, timestamp, timestamp);
+    const created: ItemRecord = {
+      id,
+      name,
+      category,
+      icon,
+      baseUnit,
+      minimumStock,
+      quantityBase: 0,
+      inventoryValue: 0,
+      averageCostPerBaseUnit: 0,
+      active: active === 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    rememberItem(id, created);
+    return created;
   });
 }
 
-export function updateItem(id: string, input: ItemInput): ItemRecord {
-  return withTransaction(() => {
-    const existing = requireItem(id);
+export async function updateItem(id: string, input: ItemInput): Promise<ItemRecord> {
+  return withTransaction(async () => {
+    const existing = await requireItem(id);
     const name = cleanName(input.name, "Item name");
-    assertUniqueItemName(name, id);
+    await assertUniqueItemName(name, id);
     const category = cleanCategory(input.category);
     const baseUnit = cleanBaseUnit(input.baseUnit);
     const minimumStock = cleanMinimum(input.minimumStock ?? 0);
     const icon = cleanIcon(input.icon, existing.icon);
     if (baseUnit !== existing.baseUnit) {
-      const moves = getDb()
+      const moves = (await (await getDb())
         .prepare("SELECT COUNT(*) AS c FROM inventory_transactions WHERE item_id = ?")
-        .get(id) as { c: number };
+        .get(id)) as { c: number };
       if (moves.c > 0) {
         throw new DomainError("The unit type can't be changed after stock has been recorded.");
       }
     }
     const active = input.active === false ? 0 : 1;
-    getDb()
+    const timestamp = nowIso();
+    await (await getDb())
       .prepare(
         `UPDATE inventory_items
          SET name = ?, category = ?, icon = ?, base_unit = ?, minimum_stock = ?, active = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .run(name, category, icon, baseUnit, minimumStock, active, nowIso(), id);
-    return requireItem(id);
+      .run(name, category, icon, baseUnit, minimumStock, active, timestamp, id);
+    const updated: ItemRecord = {
+      ...existing,
+      name,
+      category,
+      icon,
+      baseUnit,
+      minimumStock,
+      active: active === 1,
+      updatedAt: timestamp,
+    };
+    rememberItem(id, updated);
+    return updated;
   });
 }
 
@@ -233,10 +271,10 @@ function cleanMinimum(value: number): number {
   return value;
 }
 
-function assertUniqueItemName(name: string, exceptId?: string): void {
-  const row = getDb()
+async function assertUniqueItemName(name: string, exceptId?: string): Promise<void> {
+  const row = (await (await getDb())
     .prepare("SELECT id, active FROM inventory_items WHERE lower(name) = lower(?)")
-    .get(name) as { id: string; active: number } | undefined;
+    .get(name)) as { id: string; active: number } | undefined;
   if (row && row.id !== exceptId) {
     throw new DomainError(
       row.active
@@ -256,9 +294,9 @@ export type PurchaseInput = {
   notes?: string;
 };
 
-export function createPurchase(input: PurchaseInput): string {
-  return withTransaction(() => {
-    const item = requireItem(input.itemId);
+export async function createPurchase(input: PurchaseInput): Promise<string> {
+  return withTransaction(async () => {
+    const item = await requireItem(input.itemId);
     if (!item.active) throw new DomainError(`${item.name} is inactive. Reactivate it before purchasing.`);
     const quantityBase = quantityToBase(input.amount, input.unit, item.baseUnit);
     const cost = cleanMoney(input.cost, "Purchase cost", true);
@@ -268,7 +306,7 @@ export function createPurchase(input: PurchaseInput): string {
     const id = randomUUID();
     const unitCost = cost / quantityBase;
     const timestamp = nowIso();
-    getDb()
+    await (await getDb())
       .prepare(
         `INSERT INTO purchases (
           id, item_id, quantity_input, input_unit, quantity_base, purchase_cost, unit_cost_per_base,
@@ -276,7 +314,7 @@ export function createPurchase(input: PurchaseInput): string {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(id, item.id, input.amount, input.unit, quantityBase, cost, unitCost, supplier, notes, date, timestamp);
-    postMovement({
+    await postMovement({
       itemId: item.id,
       type: "purchase",
       quantityBase,
@@ -301,9 +339,9 @@ export type AdjustmentInput = {
   date: string;
 };
 
-export function createAdjustment(input: AdjustmentInput): string {
-  return withTransaction(() => {
-    const item = requireItem(input.itemId);
+export async function createAdjustment(input: AdjustmentInput): Promise<string> {
+  return withTransaction(async () => {
+    const item = await requireItem(input.itemId);
     if (!isAdjustmentReason(input.reason)) throw new DomainError("Choose a reason.");
     const reason: AdjustmentReason = input.reason;
     const quantityBase = quantityToBase(input.amount, input.unit, item.baseUnit);
@@ -321,7 +359,7 @@ export function createAdjustment(input: AdjustmentInput): string {
     const type = transactionTypeForReason(reason);
     const average = currentAverage(stateOf(item));
     if (signed > 0) {
-      postMovement({
+      await postMovement({
         itemId: item.id,
         type,
         quantityBase: signed,
@@ -333,7 +371,7 @@ export function createAdjustment(input: AdjustmentInput): string {
         notes: note,
       });
     } else {
-      postMovement({
+      await postMovement({
         itemId: item.id,
         type,
         quantityBase: signed,

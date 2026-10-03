@@ -4,8 +4,8 @@ import { listItemOptions } from "@/lib/queries";
 
 export const metadata = { title: "Inventory" };
 
-export default function InventoryPage() {
-  const items = listItemOptions();
+export default async function InventoryPage() {
+  const items = await listItemOptions();
   return (
     <div className="page">
       <header className="page-header">

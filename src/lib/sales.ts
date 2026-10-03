@@ -3,7 +3,7 @@ import { getDb, withTransaction } from "./db";
 import { nowIso, todayISO } from "./dates";
 import { DomainError } from "./errors";
 import { postMovement, requireItem, type ItemRecord } from "./inventory";
-import { getProduct } from "./products";
+import { getProduct, rememberProduct } from "./products";
 import { cleanDate, cleanMoney, cleanOptional } from "./validate";
 import type { BaseUnit } from "./constants";
 
@@ -133,18 +133,18 @@ function mapConsumption(row: ConsumptionRow): SaleConsumptionRecord {
   };
 }
 
-export function getSale(id: string): SaleRecord | null {
-  const row = getDb().prepare("SELECT * FROM sales WHERE id = ?").get(id) as SaleRow | undefined;
+export async function getSale(id: string): Promise<SaleRecord | null> {
+  const row = (await (await getDb()).prepare("SELECT * FROM sales WHERE id = ?").get(id)) as SaleRow | undefined;
   if (!row) return null;
   return hydrate(row);
 }
 
-function hydrate(row: SaleRow): SaleRecord {
-  const db = getDb();
-  const lines = db.prepare("SELECT * FROM sale_lines WHERE sale_id = ? ORDER BY rowid").all(row.id) as LineRow[];
-  const consumptions = db
+async function hydrate(row: SaleRow): Promise<SaleRecord> {
+  const db = await getDb();
+  const lines = (await db.prepare("SELECT * FROM sale_lines WHERE sale_id = ? ORDER BY rowid").all(row.id)) as LineRow[];
+  const consumptions = (await db
     .prepare("SELECT * FROM sale_consumptions WHERE sale_id = ? ORDER BY rowid")
-    .all(row.id) as ConsumptionRow[];
+    .all(row.id)) as ConsumptionRow[];
   return {
     id: row.id,
     soldAt: row.sold_at,
@@ -170,51 +170,51 @@ function hydrate(row: SaleRow): SaleRecord {
   };
 }
 
-export function saveSale(input: SaleInput): string {
-  return withTransaction(() => {
+export async function saveSale(input: SaleInput): Promise<string> {
+  return withTransaction(async () => {
     const soldAt = cleanDate(input.soldAt, "Sale date");
     const customerName = cleanOptional(input.customerName, 80, "Customer name");
     const notes = cleanOptional(input.notes, 400, "Notes");
-    const parsed = parseLines(input.lines);
+    const parsed = await parseLines(input.lines);
     if (input.id) {
-      const existing = getSale(input.id);
+      const existing = await getSale(input.id);
       if (!existing) throw new DomainError("That sale no longer exists.");
       if (existing.status === "voided") throw new DomainError("Voided sales can't be edited.");
       if (sameLineConsumption(existing.lines, parsed)) {
-        updateSaleInPlace(existing, { soldAt, customerName, notes, lines: parsed });
+        await updateSaleInPlace(existing, { soldAt, customerName, notes, lines: parsed });
         return existing.id;
       }
-      reversePostedSaleMovements(existing.id);
-      rewriteSale(existing.id, existing.createdAt, { soldAt, customerName, notes, lines: parsed });
+      await reversePostedSaleMovements(existing.id);
+      await rewriteSale(existing.id, { soldAt, customerName, notes, lines: parsed });
       return existing.id;
     }
     const id = randomUUID();
     const timestamp = nowIso();
-    getDb()
+    await (await getDb())
       .prepare(
         `INSERT INTO sales (
           id, sold_at, customer_name, notes, status, total_price, estimated_cost, estimated_profit, created_at, updated_at
         ) VALUES (?, ?, ?, ?, 'completed', 0, 0, 0, ?, ?)`,
       )
       .run(id, soldAt, customerName, notes, timestamp, timestamp);
-    applyLines(id, soldAt, parsed);
+    await applyLines(id, soldAt, parsed);
     return id;
   });
 }
 
-export function voidSale(id: string): void {
-  withTransaction(() => {
-    const existing = getSale(id);
+export async function voidSale(id: string): Promise<void> {
+  await withTransaction(async () => {
+    const existing = await getSale(id);
     if (!existing) throw new DomainError("That sale no longer exists.");
     if (existing.status === "voided") throw new DomainError("This sale is already voided.");
-    reversePostedSaleMovements(id);
-    getDb().prepare("UPDATE sales SET status = 'voided', updated_at = ? WHERE id = ?").run(nowIso(), id);
+    await reversePostedSaleMovements(id);
+    await (await getDb()).prepare("UPDATE sales SET status = 'voided', updated_at = ? WHERE id = ?").run(nowIso(), id);
   });
 }
 
-export function saveRecipeFromSaleLine(saleId: string, lineId: string): string {
-  return withTransaction(() => {
-    const sale = getSale(saleId);
+export async function saveRecipeFromSaleLine(saleId: string, lineId: string): Promise<string> {
+  return withTransaction(async () => {
+    const sale = await getSale(saleId);
     if (!sale || sale.status === "voided") throw new DomainError("That sale can't be used for a recipe.");
     const line = sale.lines.find((entry) => entry.id === lineId);
     if (!line || !line.productId) throw new DomainError("Choose a product line to save as a recipe.");
@@ -224,26 +224,30 @@ export function saveRecipeFromSaleLine(saleId: string, lineId: string): string {
       quantityBase: consumption.quantityBase / line.quantity,
     }));
     const timestamp = nowIso();
-    const db = getDb();
-    db.prepare("DELETE FROM recipe_lines WHERE product_id = ?").run(line.productId);
-    const insert = db.prepare(
-      `INSERT INTO recipe_lines (id, product_id, inventory_item_id, quantity_base, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    );
+    const db = await getDb();
+    await db.prepare("DELETE FROM recipe_lines WHERE product_id = ?").run(line.productId);
     for (const recipeLine of perUnit) {
       if (!(recipeLine.quantityBase > 0)) throw new DomainError("Recipe quantities must be greater than zero.");
-      insert.run(randomUUID(), line.productId, recipeLine.itemId, recipeLine.quantityBase, timestamp, timestamp);
+      await db
+        .prepare(
+          `INSERT INTO recipe_lines (id, product_id, inventory_item_id, quantity_base, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(randomUUID(), line.productId, recipeLine.itemId, recipeLine.quantityBase, timestamp, timestamp);
     }
-    db.prepare("UPDATE products SET updated_at = ? WHERE id = ?").run(timestamp, line.productId);
+    await db.prepare("UPDATE products SET updated_at = ? WHERE id = ?").run(timestamp, line.productId);
+    const product = await getProduct(line.productId);
+    if (product) rememberProduct({ ...product, updatedAt: timestamp, recipe: perUnit });
     return line.productId;
   });
 }
 
-function parseLines(lines: SaleLineInput[]): ParsedLine[] {
+async function parseLines(lines: SaleLineInput[]): Promise<ParsedLine[]> {
   if (!lines.length) throw new DomainError("Add a product to this sale.");
   if (lines.length > 30) throw new DomainError("A sale can include up to 30 products.");
-  return lines.map((line) => {
-    const product = getProduct(line.productId);
+  const parsed: ParsedLine[] = [];
+  for (const line of lines) {
+    const product = await getProduct(line.productId);
     if (!product) throw new DomainError("Choose a product that exists.");
     if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
       throw new DomainError(`Enter a quantity for ${product.name}.`);
@@ -254,7 +258,7 @@ function parseLines(lines: SaleLineInput[]): ParsedLine[] {
     const merged = new Map<string, { quantityBase: number; item: ItemRecord }>();
     for (const consumption of line.consumptions) {
       if (!consumption.itemId) continue;
-      const item = requireItem(consumption.itemId);
+      const item = await requireItem(consumption.itemId);
       if (!Number.isFinite(consumption.quantityBase) || consumption.quantityBase <= 0) {
         throw new DomainError(`Enter a quantity for ${item.name}.`);
       }
@@ -263,7 +267,7 @@ function parseLines(lines: SaleLineInput[]): ParsedLine[] {
       if (current) current.quantityBase += consumption.quantityBase;
       else merged.set(item.id, { quantityBase: consumption.quantityBase, item });
     }
-    return {
+    parsed.push({
       id: line.id,
       productId: product.id,
       productName: product.name,
@@ -275,8 +279,9 @@ function parseLines(lines: SaleLineInput[]): ParsedLine[] {
         quantityBase: entry.quantityBase,
         item: entry.item,
       })),
-    };
-  });
+    });
+  }
+  return parsed;
 }
 
 function sameLineConsumption(existing: SaleLineRecord[], parsed: ParsedLine[]): boolean {
@@ -302,29 +307,29 @@ function close(a: number, b: number): boolean {
   return Math.abs(a - b) < 1e-6;
 }
 
-function updateSaleInPlace(
+async function updateSaleInPlace(
   existing: SaleRecord,
   input: { soldAt: string; customerName: string | null; notes: string | null; lines: ParsedLine[] },
-): void {
-  const db = getDb();
+): Promise<void> {
+  const db = await getDb();
   let totalPrice = 0;
   for (const line of input.lines) {
     if (!line.id) throw new DomainError("Couldn't match this sale line.");
     const lineTotal = line.quantity * line.unitPrice;
     totalPrice += lineTotal;
-    db.prepare("UPDATE sale_lines SET unit_price = ?, line_total = ? WHERE id = ?").run(
+    await db.prepare("UPDATE sale_lines SET unit_price = ?, line_total = ? WHERE id = ?").run(
       line.unitPrice,
       lineTotal,
       line.id,
     );
-    db.prepare(
+    await db.prepare(
       `UPDATE inventory_transactions
        SET occurred_at = ?
        WHERE reference_id = ? AND reference_line_id = ? AND reference_type = 'sale' AND status = 'posted'`,
     ).run(input.soldAt, existing.id, line.id);
   }
   const estimatedCost = existing.estimatedCost;
-  db.prepare(
+  await db.prepare(
     `UPDATE sales
      SET sold_at = ?, customer_name = ?, notes = ?, total_price = ?, estimated_cost = ?, estimated_profit = ?, updated_at = ?
      WHERE id = ?`,
@@ -340,25 +345,23 @@ function updateSaleInPlace(
   );
 }
 
-function rewriteSale(
+async function rewriteSale(
   id: string,
-  createdAt: string,
   input: { soldAt: string; customerName: string | null; notes: string | null; lines: ParsedLine[] },
-): void {
-  const db = getDb();
-  db.prepare("DELETE FROM sale_consumptions WHERE sale_id = ?").run(id);
-  db.prepare("DELETE FROM sale_lines WHERE sale_id = ?").run(id);
-  db.prepare(
+): Promise<void> {
+  const db = await getDb();
+  await db.prepare("DELETE FROM sale_consumptions WHERE sale_id = ?").run(id);
+  await db.prepare("DELETE FROM sale_lines WHERE sale_id = ?").run(id);
+  await db.prepare(
     `UPDATE sales
      SET sold_at = ?, customer_name = ?, notes = ?, status = 'completed', updated_at = ?
      WHERE id = ?`,
   ).run(input.soldAt, input.customerName, input.notes, nowIso(), id);
-  void createdAt;
-  applyLines(id, input.soldAt, input.lines);
+  await applyLines(id, input.soldAt, input.lines);
 }
 
-function applyLines(saleId: string, soldAt: string, lines: ParsedLine[]): void {
-  const db = getDb();
+async function applyLines(saleId: string, soldAt: string, lines: ParsedLine[]): Promise<void> {
+  const db = await getDb();
   let totalPrice = 0;
   let estimatedCost = 0;
   for (const line of lines) {
@@ -366,7 +369,7 @@ function applyLines(saleId: string, soldAt: string, lines: ParsedLine[]): void {
     let lineCost = 0;
     const priced: { item: ItemRecord; quantityBase: number; unitCost: number; totalCost: number }[] = [];
     for (const consumption of line.consumptions) {
-      const moved = postMovement({
+      const moved = await postMovement({
         itemId: consumption.itemId,
         type: "sale",
         quantityBase: -consumption.quantityBase,
@@ -387,19 +390,18 @@ function applyLines(saleId: string, soldAt: string, lines: ParsedLine[]): void {
     const lineTotal = line.quantity * line.unitPrice;
     totalPrice += lineTotal;
     estimatedCost += lineCost;
-    db.prepare(
+    await db.prepare(
       `INSERT INTO sale_lines (
         id, sale_id, product_id, product_name, product_icon, quantity, unit_price, line_total, estimated_cost
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(lineId, saleId, line.productId, line.productName, line.productIcon, line.quantity, line.unitPrice, lineTotal, lineCost);
-    const insert = db.prepare(
-      `INSERT INTO sale_consumptions (
-        id, sale_id, sale_line_id, inventory_item_id, item_name, item_icon, base_unit,
-        quantity_base, unit_cost_per_base, total_cost
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
     for (const consumption of priced) {
-      insert.run(
+      await db.prepare(
+        `INSERT INTO sale_consumptions (
+          id, sale_id, sale_line_id, inventory_item_id, item_name, item_icon, base_unit,
+          quantity_base, unit_cost_per_base, total_cost
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
         randomUUID(),
         saleId,
         lineId,
@@ -413,22 +415,22 @@ function applyLines(saleId: string, soldAt: string, lines: ParsedLine[]): void {
       );
     }
   }
-  db.prepare(
+  await db.prepare(
     "UPDATE sales SET total_price = ?, estimated_cost = ?, estimated_profit = ?, updated_at = ? WHERE id = ?",
   ).run(totalPrice, estimatedCost, totalPrice - estimatedCost, nowIso(), saleId);
 }
 
-function reversePostedSaleMovements(saleId: string): void {
-  const db = getDb();
-  const rows = db
+async function reversePostedSaleMovements(saleId: string): Promise<void> {
+  const db = await getDb();
+  const rows = (await db
     .prepare(
       `SELECT * FROM inventory_transactions
        WHERE reference_id = ? AND reference_type = 'sale' AND status = 'posted' AND quantity_base < 0
        ORDER BY created_at`,
     )
-    .all(saleId) as TxnRow[];
+    .all(saleId)) as TxnRow[];
   for (const row of rows) {
-    postMovement({
+    await postMovement({
       itemId: row.item_id,
       type: "sale",
       quantityBase: -row.quantity_base,
@@ -440,6 +442,6 @@ function reversePostedSaleMovements(saleId: string): void {
       referenceLineId: row.reference_line_id,
       notes: row.notes ? `Reversal · ${row.notes}` : "Reversal of sale",
     });
-    db.prepare("UPDATE inventory_transactions SET status = 'reversed' WHERE id = ?").run(row.id);
+    await db.prepare("UPDATE inventory_transactions SET status = 'reversed' WHERE id = ?").run(row.id);
   }
 }

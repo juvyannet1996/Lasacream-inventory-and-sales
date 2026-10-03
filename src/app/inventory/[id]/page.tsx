@@ -14,7 +14,7 @@ const LABELS = { purchase: "Purchases", sale: "Sales", wastage: "Wastage", adjus
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const item = getItemOption(id);
+  const item = await getItemOption(id);
   return { title: item?.name ?? "Inventory" };
 }
 
@@ -27,14 +27,14 @@ export default async function InventoryItemPage({
 }) {
   const { id } = await params;
   const query = await searchParams;
-  const item = getItemOption(id);
+  const item = await getItemOption(id);
   if (!item) notFound();
   const requested = one(query.type);
   const type = requested && isTransactionType(requested) ? requested : "all";
-  const history = listTransactions({ itemId: id, type, limit: 300 });
+  const history = await listTransactions({ itemId: id, type, limit: 300 });
   const level = stockStatus(item.quantityBase, item.minimumStock);
   const label = stockLabel(level);
-  const items = listItemOptions();
+  const items = await listItemOptions();
 
   return (
     <div className="page">

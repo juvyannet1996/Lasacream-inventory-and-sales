@@ -4,8 +4,8 @@ import { listProductOptions } from "@/lib/queries";
 
 export const metadata = { title: "Products" };
 
-export default function ProductsPage() {
-  const products = listProductOptions();
+export default async function ProductsPage() {
+  const products = await listProductOptions();
   return (
     <div className="page">
       <header className="page-header">

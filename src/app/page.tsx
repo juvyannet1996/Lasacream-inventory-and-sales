@@ -22,11 +22,11 @@ export default async function DashboardPage({
     { defaultPreset: "month", today },
   );
   const grain = chartGrain(one(params.grain), range);
-  const periods = dashboardPeriods(today);
-  const points = salesSeries(range, grain);
+  const periods = await dashboardPeriods(today);
+  const points = await salesSeries(range, grain);
   const max = Math.max(...points.map((point) => point.revenue), 0);
-  const products = topProducts(range);
-  const low = lowStockItems();
+  const products = await topProducts(range);
+  const low = await lowStockItems();
 
   return (
     <div className="page">

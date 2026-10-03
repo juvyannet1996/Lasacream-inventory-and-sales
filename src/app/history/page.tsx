@@ -25,9 +25,9 @@ export default async function HistoryPage({
   const requested = one(params.type);
   const type = requested && isTransactionType(requested) ? requested : "all";
   const itemId = one(params.item);
-  const items = listItemOptions();
+  const items = await listItemOptions();
   const validItem = itemId && items.some((item) => item.id === itemId) ? itemId : undefined;
-  const history = listTransactions({
+  const history = await listTransactions({
     itemId: validItem,
     type,
     from: range.from,

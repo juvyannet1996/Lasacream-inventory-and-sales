@@ -16,8 +16,8 @@ export const viewport: Viewport = {
 
 export const dynamic = "force-dynamic";
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  ensureReady();
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  await ensureReady();
   return (
     <html lang="en">
       <body>

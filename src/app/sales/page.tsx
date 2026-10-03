@@ -19,7 +19,7 @@ export default async function SalesPage({
     { range: one(params.range), from: one(params.from), to: one(params.to) },
     { defaultPreset: "month", today },
   );
-  const sales = listSales(range);
+  const sales = await listSales(range);
   return (
     <div className="page">
       <header className="page-header">

@@ -105,8 +105,8 @@ function mapItem(row: ItemRow): ItemOption {
   };
 }
 
-export function listItemOptions(): ItemOption[] {
-  const rows = getDb()
+export async function listItemOptions(): Promise<ItemOption[]> {
+  const rows = (await (await getDb())
     .prepare(
       `${ITEM_SELECT}
        ORDER BY CASE i.category
@@ -116,19 +116,19 @@ export function listItemOptions(): ItemOption[] {
          ELSE 3
        END, i.name COLLATE NOCASE`,
     )
-    .all() as ItemRow[];
+    .all()) as ItemRow[];
   return rows.map(mapItem);
 }
 
-export function getItemOption(id: string): ItemOption | null {
-  const row = getDb().prepare(`${ITEM_SELECT} WHERE i.id = ?`).get(id) as ItemRow | undefined;
+export async function getItemOption(id: string): Promise<ItemOption | null> {
+  const row = (await (await getDb()).prepare(`${ITEM_SELECT} WHERE i.id = ?`).get(id)) as ItemRow | undefined;
   return row ? mapItem(row) : null;
 }
 
-export function listProductOptions(): ProductOption[] {
-  const products = getDb()
+export async function listProductOptions(): Promise<ProductOption[]> {
+  const products = (await (await getDb())
     .prepare("SELECT * FROM products ORDER BY name COLLATE NOCASE")
-    .all() as {
+    .all()) as {
     id: string;
     name: string;
     icon: string;
@@ -137,12 +137,12 @@ export function listProductOptions(): ProductOption[] {
     created_at: string;
     updated_at: string;
   }[];
-  const lines = getDb()
+  const lines = (await (await getDb())
     .prepare(
       `SELECT product_id AS productId, inventory_item_id AS itemId, quantity_base AS quantityBase
        FROM recipe_lines ORDER BY rowid`,
     )
-    .all() as { productId: string; itemId: string; quantityBase: number }[];
+    .all()) as { productId: string; itemId: string; quantityBase: number }[];
   const recipes = new Map<string, { itemId: string; quantityBase: number }[]>();
   for (const line of lines) {
     const list = recipes.get(line.productId) ?? [];
@@ -173,13 +173,13 @@ const TRANSACTION_SELECT = `
   LEFT JOIN purchases p ON t.reference_type = 'purchase' AND p.id = t.reference_id
 `;
 
-export function listTransactions(filter: {
+export async function listTransactions(filter: {
   itemId?: string;
   type?: TransactionType | "all";
   from?: string | null;
   to?: string | null;
   limit?: number;
-}): { rows: TransactionView[]; truncated: boolean } {
+}): Promise<{ rows: TransactionView[]; truncated: boolean }> {
   const clauses: string[] = [];
   const params: (string | number)[] = [];
   if (filter.itemId) {
@@ -200,11 +200,11 @@ export function listTransactions(filter: {
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const limit = filter.limit ?? 500;
-  const rows = getDb()
+  const rows = (await (await getDb())
     .prepare(
       `${TRANSACTION_SELECT} ${where} ORDER BY t.occurred_at DESC, t.created_at DESC LIMIT ?`,
     )
-    .all(...params, limit + 1) as TransactionView[];
+    .all(...params, limit + 1)) as TransactionView[];
   return { rows: rows.slice(0, limit), truncated: rows.length > limit };
 }
 
@@ -220,7 +220,7 @@ export type SaleSummary = {
   lines: { productName: string; productIcon: string; quantity: number; unitPrice: number; lineTotal: number }[];
 };
 
-export function listSales(range: ResolvedRange): SaleSummary[] {
+export async function listSales(range: ResolvedRange): Promise<SaleSummary[]> {
   const clauses = ["1 = 1"];
   const params: string[] = [];
   if (range.from) {
@@ -231,7 +231,7 @@ export function listSales(range: ResolvedRange): SaleSummary[] {
     clauses.push("sold_at <= ?");
     params.push(range.to);
   }
-  const sales = getDb()
+  const sales = (await (await getDb())
     .prepare(
       `SELECT id, sold_at AS soldAt, customer_name AS customerName, notes, status,
               total_price AS totalPrice, estimated_cost AS estimatedCost, estimated_profit AS estimatedProfit
@@ -239,10 +239,10 @@ export function listSales(range: ResolvedRange): SaleSummary[] {
        WHERE ${clauses.join(" AND ")}
        ORDER BY sold_at DESC, created_at DESC`,
     )
-    .all(...params) as Omit<SaleSummary, "lines">[];
+    .all(...params)) as Omit<SaleSummary, "lines">[];
   if (!sales.length) return [];
   const ids = sales.map((sale) => sale.id);
-  const lines = getDb()
+  const lines = (await (await getDb())
     .prepare(
       `SELECT sale_id AS saleId, product_name AS productName, product_icon AS productIcon,
               quantity, unit_price AS unitPrice, line_total AS lineTotal
@@ -250,7 +250,7 @@ export function listSales(range: ResolvedRange): SaleSummary[] {
        WHERE sale_id IN (${ids.map(() => "?").join(",")})
        ORDER BY rowid`,
     )
-    .all(...ids) as {
+    .all(...ids)) as {
     saleId: string;
     productName: string;
     productIcon: string;
@@ -280,8 +280,8 @@ export type PeriodStats = {
   profit: number;
 };
 
-export function periodStats(from: string, to: string): PeriodStats {
-  const row = getDb()
+export async function periodStats(from: string, to: string): Promise<PeriodStats> {
+  const row = (await (await getDb())
     .prepare(
       `SELECT COUNT(*) AS orders,
               COALESCE(SUM(total_price), 0) AS revenue,
@@ -290,7 +290,7 @@ export function periodStats(from: string, to: string): PeriodStats {
        FROM sales
        WHERE status = 'completed' AND sold_at >= ? AND sold_at <= ?`,
     )
-    .get(from, to) as PeriodStats;
+    .get(from, to)) as PeriodStats;
   return row;
 }
 
@@ -301,24 +301,24 @@ export type ChartPoint = {
   revenue: number;
 };
 
-export function salesSeries(range: ResolvedRange, grain: ChartGrain): ChartPoint[] {
+export async function salesSeries(range: ResolvedRange, grain: ChartGrain): Promise<ChartPoint[]> {
   if (!range.from || !range.to) {
-    const bounds = getDb()
+    const bounds = (await (await getDb())
       .prepare(
         `SELECT MIN(sold_at) AS minDate, MAX(sold_at) AS maxDate
          FROM sales WHERE status = 'completed'`,
       )
-      .get() as { minDate: string | null; maxDate: string | null };
+      .get()) as { minDate: string | null; maxDate: string | null };
     if (!bounds.minDate || !bounds.maxDate) return [];
     return salesSeries({ preset: "custom", from: bounds.minDate, to: bounds.maxDate }, grain);
   }
-  const rows = getDb()
+  const rows = (await (await getDb())
     .prepare(
       `SELECT sold_at AS soldAt, total_price AS totalPrice
        FROM sales
        WHERE status = 'completed' AND sold_at >= ? AND sold_at <= ?`,
     )
-    .all(range.from, range.to) as { soldAt: string; totalPrice: number }[];
+    .all(range.from, range.to)) as { soldAt: string; totalPrice: number }[];
   const totals = new Map<string, number>();
   for (const row of rows) {
     const key = bucketKey(row.soldAt, grain);
@@ -381,7 +381,7 @@ export type TopProduct = {
   revenue: number;
 };
 
-export function topProducts(range: ResolvedRange): TopProduct[] {
+export async function topProducts(range: ResolvedRange): Promise<TopProduct[]> {
   const clauses = ["s.status = 'completed'"];
   const params: string[] = [];
   if (range.from) {
@@ -392,7 +392,7 @@ export function topProducts(range: ResolvedRange): TopProduct[] {
     clauses.push("s.sold_at <= ?");
     params.push(range.to);
   }
-  return getDb()
+  return (await (await getDb())
     .prepare(
       `SELECT l.product_id AS productId, l.product_name AS name, l.product_icon AS icon,
               SUM(l.quantity) AS quantity, SUM(l.line_total) AS revenue
@@ -403,11 +403,11 @@ export function topProducts(range: ResolvedRange): TopProduct[] {
        ORDER BY quantity DESC, revenue DESC
        LIMIT 5`,
     )
-    .all(...params) as TopProduct[];
+    .all(...params)) as TopProduct[];
 }
 
-export function lowStockItems(): (ItemOption & { level: StockLevel })[] {
-  return listItemOptions()
+export async function lowStockItems(): Promise<(ItemOption & { level: StockLevel })[]> {
+  return (await listItemOptions())
     .filter((item) => item.active)
     .map((item) => ({ ...item, level: stockStatus(item.quantityBase, item.minimumStock) }))
     .filter((item) => item.level !== "ok")
@@ -417,11 +417,11 @@ export function lowStockItems(): (ItemOption & { level: StockLevel })[] {
     });
 }
 
-export function dashboardPeriods(today = todayISO()) {
+export async function dashboardPeriods(today = todayISO()) {
   return {
-    today: periodStats(today, today),
-    week: periodStats(startOfWeek(today), endOfWeek(today)),
-    month: periodStats(startOfMonth(today), endOfMonth(today)),
+    today: await periodStats(today, today),
+    week: await periodStats(startOfWeek(today), endOfWeek(today)),
+    month: await periodStats(startOfMonth(today), endOfMonth(today)),
   };
 }
 

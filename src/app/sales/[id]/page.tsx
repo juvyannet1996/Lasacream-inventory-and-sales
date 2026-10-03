@@ -9,15 +9,15 @@ import { formatNumber, formatQuantity } from "@/lib/units";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const sale = getSale(id);
+  const sale = await getSale(id);
   return { title: sale ? formatDateWithYear(sale.soldAt) : "Sale" };
 }
 
 export default async function SalePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const sale = getSale(id);
+  const sale = await getSale(id);
   if (!sale) notFound();
-  const recipes = new Map(listProductOptions().map((product) => [product.id, product.recipe.length > 0]));
+  const recipes = new Map((await listProductOptions()).map((product) => [product.id, product.recipe.length > 0]));
 
   return (
     <div className="page">
