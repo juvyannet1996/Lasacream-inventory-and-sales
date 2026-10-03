@@ -57,6 +57,17 @@ CREATE TABLE IF NOT EXISTS purchases (
 
 CREATE INDEX IF NOT EXISTS idx_purchases_item ON purchases(item_id, purchased_at);
 
+CREATE TABLE IF NOT EXISTS purchase_receipts (
+  id TEXT PRIMARY KEY,
+  supplier TEXT,
+  notes TEXT,
+  purchased_at TEXT NOT NULL,
+  total_cost REAL NOT NULL CHECK (total_cost >= 0),
+  created_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_receipts_date ON purchase_receipts(purchased_at);
+
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -177,8 +188,17 @@ export function defaultDatabasePath(): string {
   return path.join(process.cwd(), "data", "lasacream.db");
 }
 
-export function migrate(db: { exec(sql: string): void }): void {
+export function migrate(db: SqliteDatabase): void {
   db.exec(SCHEMA);
+  ensureReceiptColumnSync(db);
+}
+
+function ensureReceiptColumnSync(db: SqliteDatabase): void {
+  const columns = db.prepare("PRAGMA table_info(purchases)").all() as { name: string }[];
+  if (!columns.some((column) => column.name === "receipt_id")) {
+    db.exec("ALTER TABLE purchases ADD COLUMN receipt_id TEXT");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_purchases_receipt ON purchases(receipt_id)");
 }
 
 export async function openDatabase(filename: string): Promise<SqliteDatabase> {
@@ -257,8 +277,20 @@ async function whenReady(): Promise<void> {
 
 async function openSchema(): Promise<void> {
   const d1 = await activeD1();
-  if (d1) await ensureD1Schema(d1);
-  else await sqliteHandle();
+  if (d1) {
+    await ensureD1Schema(d1);
+    await ensureReceiptColumn(d1Adapter(d1, null));
+    return;
+  }
+  await sqliteHandle();
+}
+
+async function ensureReceiptColumn(db: Sql): Promise<void> {
+  const columns = (await db.prepare("PRAGMA table_info(purchases)").all()) as { name: string }[];
+  if (!columns.some((column) => column.name === "receipt_id")) {
+    await db.exec("ALTER TABLE purchases ADD COLUMN receipt_id TEXT");
+  }
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_purchases_receipt ON purchases(receipt_id)");
 }
 
 function shouldSeed(): boolean {

@@ -295,36 +295,93 @@ export type PurchaseInput = {
 };
 
 export async function createPurchase(input: PurchaseInput): Promise<string> {
+  return createPurchaseReceipt({
+    date: input.date,
+    supplier: input.supplier,
+    notes: input.notes,
+    lines: [{ itemId: input.itemId, amount: input.amount, unit: input.unit, cost: input.cost }],
+  });
+}
+
+export type PurchaseLineInput = {
+  itemId: string;
+  amount: number;
+  unit: string;
+  cost: number;
+};
+
+export async function createPurchaseReceipt(input: {
+  date: string;
+  supplier?: string;
+  notes?: string;
+  lines: PurchaseLineInput[];
+}): Promise<string> {
   return withTransaction(async () => {
-    const item = await requireItem(input.itemId);
-    if (!item.active) throw new DomainError(`${item.name} is inactive. Reactivate it before purchasing.`);
-    const quantityBase = quantityToBase(input.amount, input.unit, item.baseUnit);
-    const cost = cleanMoney(input.cost, "Purchase cost", true);
+    if (!input.lines.length) throw new DomainError("Add an item to this purchase.");
+    if (input.lines.length > 40) throw new DomainError("A purchase can include up to 40 items.");
     const date = cleanDate(input.date, "Purchase date");
     const supplier = cleanOptional(input.supplier, 80, "Supplier");
     const notes = cleanOptional(input.notes, 400, "Notes");
+    const prepared: {
+      item: ItemRecord;
+      amount: number;
+      unit: string;
+      quantityBase: number;
+      cost: number;
+      unitCost: number;
+    }[] = [];
+    for (const line of input.lines) {
+      const item = await requireItem(line.itemId);
+      if (!item.active) throw new DomainError(`${item.name} is inactive. Reactivate it before purchasing.`);
+      const quantityBase = quantityToBase(line.amount, line.unit, item.baseUnit);
+      const cost = cleanMoney(line.cost, `Purchase cost for ${item.name}`, true);
+      prepared.push({ item, amount: line.amount, unit: line.unit, quantityBase, cost, unitCost: cost / quantityBase });
+    }
     const id = randomUUID();
-    const unitCost = cost / quantityBase;
     const timestamp = nowIso();
-    await (await getDb())
+    const total = prepared.reduce((sum, line) => sum + line.cost, 0);
+    const db = await getDb();
+    await db
       .prepare(
-        `INSERT INTO purchases (
-          id, item_id, quantity_input, input_unit, quantity_base, purchase_cost, unit_cost_per_base,
-          supplier, notes, purchased_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO purchase_receipts (id, supplier, notes, purchased_at, total_cost, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, item.id, input.amount, input.unit, quantityBase, cost, unitCost, supplier, notes, date, timestamp);
-    await postMovement({
-      itemId: item.id,
-      type: "purchase",
-      quantityBase,
-      inboundValue: cost,
-      unitCostPerBase: unitCost,
-      occurredAt: date,
-      referenceType: "purchase",
-      referenceId: id,
-      notes,
-    });
+      .run(id, supplier, notes, date, total, timestamp);
+    for (const line of prepared) {
+      const lineId = randomUUID();
+      await db
+        .prepare(
+          `INSERT INTO purchases (
+            id, item_id, quantity_input, input_unit, quantity_base, purchase_cost, unit_cost_per_base,
+            supplier, notes, purchased_at, created_at, receipt_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          lineId,
+          line.item.id,
+          line.amount,
+          line.unit,
+          line.quantityBase,
+          line.cost,
+          line.unitCost,
+          supplier,
+          notes,
+          date,
+          timestamp,
+          id,
+        );
+      await postMovement({
+        itemId: line.item.id,
+        type: "purchase",
+        quantityBase: line.quantityBase,
+        inboundValue: line.cost,
+        unitCostPerBase: line.unitCost,
+        occurredAt: date,
+        referenceType: "purchase",
+        referenceId: lineId,
+        notes,
+      });
+    }
     return id;
   });
 }

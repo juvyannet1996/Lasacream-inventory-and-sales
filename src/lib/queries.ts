@@ -208,6 +208,102 @@ export async function listTransactions(filter: {
   return { rows: rows.slice(0, limit), truncated: rows.length > limit };
 }
 
+export type PurchaseReceiptLine = {
+  id: string;
+  itemId: string;
+  itemName: string;
+  itemIcon: string;
+  baseUnit: BaseUnit;
+  quantityInput: number;
+  inputUnit: string;
+  purchaseCost: number;
+};
+
+export type PurchaseReceiptView = {
+  id: string;
+  purchasedAt: string;
+  supplier: string | null;
+  notes: string | null;
+  totalCost: number;
+  lines: PurchaseReceiptLine[];
+};
+
+export async function listPurchaseReceipts(filter: {
+  from?: string | null;
+  to?: string | null;
+  itemId?: string;
+}): Promise<PurchaseReceiptView[]> {
+  const clauses: string[] = [];
+  const params: string[] = [];
+  if (filter.from) {
+    clauses.push("p.purchased_at >= ?");
+    params.push(filter.from);
+  }
+  if (filter.to) {
+    clauses.push("p.purchased_at <= ?");
+    params.push(filter.to);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const rows = (await (await getDb())
+    .prepare(
+      `SELECT
+         p.id, p.receipt_id AS receiptId, p.item_id AS itemId, i.name AS itemName, i.icon AS itemIcon,
+         i.base_unit AS baseUnit, p.quantity_input AS quantityInput, p.input_unit AS inputUnit,
+         p.purchase_cost AS purchaseCost, p.purchased_at AS purchasedAt, p.supplier, p.notes,
+         r.supplier AS receiptSupplier, r.notes AS receiptNotes, r.total_cost AS receiptTotal,
+         r.purchased_at AS receiptDate
+       FROM purchases p
+       JOIN inventory_items i ON i.id = p.item_id
+       LEFT JOIN purchase_receipts r ON r.id = p.receipt_id
+       ${where}
+       ORDER BY p.purchased_at DESC, p.rowid DESC`,
+    )
+    .all(...params)) as {
+    id: string;
+    receiptId: string | null;
+    itemId: string;
+    itemName: string;
+    itemIcon: string;
+    baseUnit: BaseUnit;
+    quantityInput: number;
+    inputUnit: string;
+    purchaseCost: number;
+    purchasedAt: string;
+    supplier: string | null;
+    notes: string | null;
+    receiptSupplier: string | null;
+    receiptNotes: string | null;
+    receiptTotal: number | null;
+    receiptDate: string | null;
+  }[];
+  const groups = new Map<string, PurchaseReceiptView>();
+  for (const row of rows) {
+    const id = row.receiptId ?? row.id;
+    const group = groups.get(id) ?? {
+      id,
+      purchasedAt: row.receiptDate ?? row.purchasedAt,
+      supplier: row.receiptId ? row.receiptSupplier : row.supplier,
+      notes: row.receiptId ? row.receiptNotes : row.notes,
+      totalCost: row.receiptTotal ?? row.purchaseCost,
+      lines: [],
+    };
+    group.lines.push({
+      id: row.id,
+      itemId: row.itemId,
+      itemName: row.itemName,
+      itemIcon: row.itemIcon,
+      baseUnit: row.baseUnit,
+      quantityInput: row.quantityInput,
+      inputUnit: row.inputUnit,
+      purchaseCost: row.purchaseCost,
+    });
+    groups.set(id, group);
+  }
+  const receipts = [...groups.values()];
+  if (!filter.itemId) return receipts;
+  return receipts.filter((receipt) => receipt.lines.some((line) => line.itemId === filter.itemId));
+}
+
 export type SaleSummary = {
   id: string;
   soldAt: string;

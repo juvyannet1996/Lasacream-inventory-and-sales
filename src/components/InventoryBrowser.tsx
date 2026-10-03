@@ -72,9 +72,9 @@ export function InventoryBrowser({ items, today }: { items: ItemOption[]; today:
                       {label ? <span className={level === "out" ? "stock-out" : "stock-low"}>{label}</span> : null}
                       {!item.active ? <span className="muted">Inactive</span> : null}
                       <div className="button-row">
-                        <button type="button" className="btn" onClick={() => setDialog({ kind: "purchase", itemId: item.id })}>
+                        <Link className="btn" href={`/purchases/new?item=${item.id}`}>
                           Purchase
-                        </button>
+                        </Link>
                         <button
                           type="button"
                           className="btn"

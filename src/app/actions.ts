@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { isDomainError } from "@/lib/errors";
-import { createAdjustment, createItem, createPurchase, updateItem, type ItemInput } from "@/lib/inventory";
+import { createAdjustment, createItem, createPurchase, createPurchaseReceipt, updateItem, type ItemInput } from "@/lib/inventory";
 import { saveProduct, type ProductInput } from "@/lib/products";
 import { saveRecipeFromSaleLine, saveSale, voidSale, type SaleInput } from "@/lib/sales";
 import { ensureReady } from "@/lib/ready";
@@ -37,6 +37,12 @@ export async function createPurchaseAction(
   input: Parameters<typeof createPurchase>[0],
 ): Promise<ActionResult<{ id: string }>> {
   return finish(async () => ({ id: await createPurchase(input) }));
+}
+
+export async function createPurchaseReceiptAction(
+  input: Parameters<typeof createPurchaseReceipt>[0],
+): Promise<ActionResult<{ id: string }>> {
+  return finish(async () => ({ id: await createPurchaseReceipt(input) }));
 }
 
 export async function createAdjustmentAction(

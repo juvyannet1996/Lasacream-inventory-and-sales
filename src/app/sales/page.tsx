@@ -41,8 +41,15 @@ export default async function SalesPage({
                   {sale.status === "voided" ? " · Voided" : ""}
                 </span>
                 <span className="item-name">
-                  {sale.lines.map((line) => `${line.productIcon} ${line.productName} × ${formatNumber(line.quantity)}`).join(", ")}
+                  {sale.customerName
+                    ? sale.customerName
+                    : sale.lines.map((line) => `${line.productIcon} ${line.productName} × ${formatNumber(line.quantity)}`).join(", ")}
                 </span>
+                {sale.customerName ? (
+                  <span className="item-meta">
+                    {sale.lines.map((line) => `${line.productIcon} ${line.productName} × ${formatNumber(line.quantity)}`).join(", ")}
+                  </span>
+                ) : null}
                 {sale.notes ? <span className="item-meta">{sale.notes}</span> : null}
               </span>
               <span className="sale-figures">

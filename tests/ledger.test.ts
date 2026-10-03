@@ -5,7 +5,7 @@ import { applyInbound, applyOutbound } from "../src/lib/costing";
 import { getDb, migrate, useD1Simulator, useDatabase } from "../src/lib/db";
 import { formatPeso, formatUnitCost } from "../src/lib/money";
 import { formatQuantity, convertToBase } from "../src/lib/units";
-import { createAdjustment, createItem, createPurchase, getItem } from "../src/lib/inventory";
+import { createAdjustment, createItem, createPurchase, createPurchaseReceipt, getItem } from "../src/lib/inventory";
 import { getProduct, saveProduct, saveRecipe } from "../src/lib/products";
 import { getSale, saveSale, voidSale } from "../src/lib/sales";
 import { seedIfEmpty } from "../src/lib/seed";
@@ -91,6 +91,29 @@ for (const mode of ["sqlite", "d1"] as const) {
       assert.equal(rows[0].unit_cost_per_base, 500 / 10000);
       assert.equal(rows[1].unit_cost_per_base, 1500 / 25000);
       assert.equal(rows[1].purchase_cost, 1500);
+    });
+
+    it("saves several items on one purchase receipt", async () => {
+      const flour = await createItem({ name: "All-Purpose Flour", category: "ingredient", icon: "🌾", baseUnit: "g" });
+      const sugar = await createItem({ name: "Sugar", category: "ingredient", icon: "🍬", baseUnit: "g" });
+      await createPurchaseReceipt({
+        date: "2026-10-01",
+        supplier: "Market",
+        lines: [
+          { itemId: flour.id, amount: 1, unit: "kg", cost: 100 },
+          { itemId: flour.id, amount: 1, unit: "kg", cost: 300 },
+          { itemId: sugar.id, amount: 2, unit: "kg", cost: 80 },
+        ],
+      });
+      const flourAfter = (await getItem(flour.id))!;
+      assert.equal(flourAfter.quantityBase, 2000);
+      assert.equal(flourAfter.inventoryValue, 400);
+      assert.equal((await getItem(sugar.id))!.quantityBase, 2000);
+      const db = await getDb();
+      const receipts = (await db.prepare("SELECT COUNT(*) AS c FROM purchase_receipts").get()) as { c: number };
+      const lines = (await db.prepare("SELECT COUNT(*) AS c FROM purchases WHERE receipt_id IS NOT NULL").get()) as { c: number };
+      assert.equal(receipts.c, 1);
+      assert.equal(lines.c, 3);
     });
 
     it("rejects incompatible purchase units and records wastage as a transaction", async () => {

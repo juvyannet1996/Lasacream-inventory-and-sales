@@ -4,7 +4,8 @@ import { MovementList } from "@/components/MovementList";
 import { RangeBar } from "@/components/RangeBar";
 import { isTransactionType, TRANSACTION_TYPES } from "@/lib/constants";
 import { rangeLabel, resolveRange, todayISO } from "@/lib/dates";
-import { listItemOptions, listTransactions } from "@/lib/queries";
+import { PurchaseReceiptList } from "@/components/PurchaseReceiptList";
+import { listItemOptions, listPurchaseReceipts, listTransactions } from "@/lib/queries";
 import { one } from "@/lib/search";
 
 const LABELS = { purchase: "Purchase", sale: "Sale", wastage: "Wastage", adjustment: "Adjustment" } as const;
@@ -27,12 +28,19 @@ export default async function HistoryPage({
   const itemId = one(params.item);
   const items = await listItemOptions();
   const validItem = itemId && items.some((item) => item.id === itemId) ? itemId : undefined;
-  const history = await listTransactions({
-    itemId: validItem,
-    type,
-    from: range.from,
-    to: range.to,
-  });
+  const history =
+    type === "purchase"
+      ? null
+      : await listTransactions({
+          itemId: validItem,
+          type,
+          from: range.from,
+          to: range.to,
+        });
+  const receipts =
+    type === "purchase"
+      ? await listPurchaseReceipts({ itemId: validItem, from: range.from, to: range.to })
+      : [];
   const preserved = new URLSearchParams();
   if (range.preset !== "all") preserved.set("range", range.preset);
   if (range.preset === "custom" && range.from && range.to) {
@@ -74,8 +82,8 @@ export default async function HistoryPage({
         </div>
       </div>
       <p className="muted">{rangeLabel(range, today)}</p>
-      <MovementList rows={history.rows} />
-      {history.truncated ? <p className="muted">Showing the latest 500 movements.</p> : null}
+      {type === "purchase" ? <PurchaseReceiptList receipts={receipts} /> : <MovementList rows={history?.rows ?? []} />}
+      {history?.truncated ? <p className="muted">Showing the latest 500 movements.</p> : null}
     </div>
   );
 }
