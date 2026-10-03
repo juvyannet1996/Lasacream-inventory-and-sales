@@ -26,4 +26,4 @@ The public site stores products, inventory, purchases, sales, and stock history 
 
 On this computer, `npm run dev` still uses `data/bakeshop.db`. The Cloudflare site uses D1. They are separate copies.
 
-The D1 database is named `lasacream` and the binding name is `DB`. The site is not on a public address until it is deployed.
+The public site is https://lasacream-bakeshop.lasacream.workers.dev. Its products, inventory, purchases, sales, and stock history are stored in the Cloudflare D1 database named `lasacream`.
